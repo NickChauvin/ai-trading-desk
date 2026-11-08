@@ -40,6 +40,8 @@ class FreeKill(unittest.TestCase):
         self.assertIsNone(scanner.free_kill(token()))
 
     def test_each_cut(self):
+        self.assertEqual(scanner.free_kill(token(price_usd=None)), "missing_price_usd")
+        self.assertEqual(scanner.free_kill(token(price_usd=0)), "price")
         self.assertEqual(scanner.free_kill(token(age_minutes=3)), "age")
         self.assertEqual(scanner.free_kill(token(liquidity_usd=1_000)), "liquidity")
         self.assertEqual(scanner.free_kill(token(volume_h1=500)), "volume")
@@ -97,11 +99,12 @@ class ChainFacts(unittest.TestCase):
         self.assertFalse(f["coverage_complete"])
         self.assertIn("not a developer-wallet audit", f["limitations"])
         self.assertTrue(f["excluded_as_pool"])
-        self.assertIsNone(chain.chain_kill(f))
+        self.assertEqual(chain.chain_kill(f), "incomplete_sample")
 
     def test_authority_is_a_fact(self):
         base = {"mint_authority": None, "freeze_authority": None,
-                "top_wallet_pct": 0.01, "top_10_pct": 0.1}
+                "top_wallet_pct": 0.01, "top_10_pct": 0.1,
+                "concentration_available": True, "coverage_complete": True}
         self.assertEqual(chain.chain_kill({**base, "mint_authority": "X"}), "mint_authority")
         self.assertEqual(chain.chain_kill({**base, "freeze_authority": "X"}), "freeze_authority")
         self.assertEqual(chain.chain_kill({**base, "top_wallet_pct": 0.09}), "top_wallet")

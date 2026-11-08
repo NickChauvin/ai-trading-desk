@@ -21,6 +21,7 @@ HOLDER_CLAIM = (
     "aggregates balances only inside that sample, and excludes an account only when its owner "
     "is positively identified as a known pool or curve program. "
     "Unknown or missing owner metadata fails closed. "
+    "If the sampled balances do not account for total supply, the token is not approved. "
     "This is not a complete holder census and not a developer-wallet audit."
 )
 
@@ -201,14 +202,17 @@ def chain_kill(facts_row: dict) -> str | None:
     """Plain facts against plain limits. First failure wins.
 
     A missing concentration figure does not pass. Numeric caps are applied only
-    to a sample that classified every returned account.
+    when every returned account was classified and the sample covers total supply.
+    A lower-bound percentage from a partial sample is not an approval.
     """
     if facts_row.get("mint_authority") and not CHAIN["allow_mint_authority"]:
         return "mint_authority"
     if facts_row.get("freeze_authority") and not CHAIN["allow_freeze_authority"]:
         return "freeze_authority"
-    if facts_row.get("concentration_available") is False:
+    if facts_row.get("concentration_available") is not True:
         return facts_row.get("concentration_failure") or "unavailable_concentration"
+    if facts_row.get("coverage_complete") is not True:
+        return "incomplete_sample"
     if facts_row.get("top_wallet_pct") is None or facts_row.get("top_10_pct") is None:
         return "unavailable_concentration"
     if facts_row["top_wallet_pct"] > CHAIN["max_top_wallet"]:

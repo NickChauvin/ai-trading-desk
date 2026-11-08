@@ -6,10 +6,13 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+
+import requests
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -240,7 +243,27 @@ class Holders(unittest.TestCase):
         self.assertEqual(facts["excluded_as_pool"][0]["program"], pump)
         self.assertFalse(facts["developer_wallet_audited"])
         self.assertFalse(facts["coverage_complete"])
-        self.assertIsNone(chain.chain_kill(facts))
+        self.assertEqual(chain.chain_kill(facts), "incomplete_sample")
+
+    def test_full_supply_sample_can_pass_and_a_partial_sample_cannot(self):
+        pump = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+        covered = self._run(100, [
+            ("pool", 80, "poolPDA", pump),
+            ("a", 4, "w1", chain.SYSTEM_PROGRAM),
+            ("b", 4, "w2", chain.SYSTEM_PROGRAM),
+            ("c", 4, "w3", chain.SYSTEM_PROGRAM),
+            ("d", 4, "w4", chain.SYSTEM_PROGRAM),
+            ("e", 4, "w5", chain.SYSTEM_PROGRAM),
+        ])
+        self.assertTrue(covered["coverage_complete"])
+        self.assertFalse(covered["developer_wallet_audited"])
+        self.assertIsNone(chain.chain_kill(covered))
+        partial = dict(covered)
+        partial["coverage_complete"] = False
+        partial["coverage_pct"] = 0.4
+        self.assertEqual(chain.chain_kill(partial), "incomplete_sample")
+        omitted = {k: v for k, v in covered.items() if k != "concentration_available"}
+        self.assertEqual(chain.chain_kill(omitted), "unavailable_concentration")
 
     def test_unknown_program_fails_closed_and_is_not_treated_as_a_pool(self):
         facts = self._run(1_000_000_000, [
@@ -271,7 +294,8 @@ class Holders(unittest.TestCase):
 
     def test_concentration_thresholds_are_exclusive_at_the_cap(self):
         base = {"mint_authority": None, "freeze_authority": None,
-                "top_wallet_pct": 0.01, "top_10_pct": 0.10, "concentration_available": True}
+                "top_wallet_pct": 0.01, "top_10_pct": 0.10,
+                "concentration_available": True, "coverage_complete": True}
         self.assertIsNone(chain.chain_kill({**base, "top_wallet_pct": 0.05, "top_10_pct": 0.25}))
         self.assertEqual(chain.chain_kill({**base, "top_wallet_pct": 0.05 + 1e-9}), "top_wallet")
         self.assertEqual(chain.chain_kill({**base, "top_10_pct": 0.25 + 1e-9}), "top_10")
@@ -832,6 +856,106 @@ class AlertsAndStocks(TempCase):
         self.assertTrue(check_stock_trade(thesis, allowed, 100, now=NOON)[0])
         blocked = account(equity=2_000, cash=100, day_start=2_000, open_risk_usd=limit - new_risk + 0.01)
         self.assertIn("aggregate", check_stock_trade(thesis, blocked, 100, now=NOON)[2])
+
+
+class LiveShape(unittest.TestCase):
+    """Payloads shaped like the 2026-11-08 public responses. No network."""
+
+    def test_missing_dex_liquidity_is_not_a_quote(self):
+        class Session:
+            def get(self, url, headers=None, timeout=None):
+                return SimpleNamespace(status_code=200, json=lambda: {"pairs": [{
+                    "priceUsd": "0.01",
+                    "liquidity": {},
+                    "volume": {},
+                    "pairCreatedAt": 1,
+                }]})
+
+        self.assertIsNone(scanner.quote("MINT", Session()))
+
+    def test_rpc_error_is_not_swallowed_into_a_pass(self):
+        def boom(method, params, session=None):
+            raise requests.HTTPError("429 Too Many Requests")
+
+        original = chain.rpc
+        chain.rpc = boom
+        try:
+            with self.assertRaises(requests.HTTPError):
+                chain.facts("MINT")
+        finally:
+            chain.rpc = original
+
+
+class Adversarial(TempCase):
+    def test_gap_through_the_stop_loses_more_than_the_stop(self):
+        broker = PaperBroker(self.tmp / "ledger.json", now=lambda: datetime(2026, 11, 8, 12, tzinfo=UTC))
+        self.assertTrue(broker.buy("M", "TEST", 20, 1.0, 100_000)["filled"])
+        entry = broker.s["positions"]["M"]["entry"]
+        result = broker.attempt_exit(
+            "M", {"price_usd": entry * 0.2, "liquidity_usd": 100_000, "quoted_at": time.time()},
+            force=True, reason="gap",
+        )
+        self.assertEqual(result["status"], "filled")
+        self.assertEqual(result["quote_freshness"], "checked")
+        loss = -result["pnl_usd"]
+        self.assertGreater(loss, 20 * EXITS["stop_pct"])
+        self.assertLess(result["fill"], entry * 0.2)
+
+    def test_stale_timestamp_blocks_the_sale_and_missing_timestamp_is_labeled(self):
+        broker = PaperBroker(self.tmp / "ledger.json")
+        broker.buy("M", "TEST", 20, 1.0, 100_000)
+        cash = broker.s["cash"]
+        stale = broker.attempt_exit("M", {"price_usd": 1.0, "liquidity_usd": 100_000,
+                                          "quoted_at": time.time() - 3600})
+        self.assertEqual(stale["status"], "failed")
+        self.assertEqual(broker.s["cash"], cash)
+        self.assertTrue(broker.s["positions"]["M"]["unresolved"])
+        fresh = {"price_usd": 1.0, "liquidity_usd": 100_000}
+        broker.s["positions"]["M"]["unresolved"] = False
+        held = broker.attempt_exit("M", fresh, force=True, reason="no timestamp")
+        self.assertEqual(held["quote_freshness"], "unknown")
+        self.assertNotIn("quoted_at", fresh)
+
+    def test_higher_slippage_reduces_proceeds_and_does_not_pay_the_raw_quote(self):
+        from config import PAPER
+        broker = PaperBroker(self.tmp / "ledger.json")
+        broker.buy("M", "TEST", 20, 1.0, 100_000)
+        original = PAPER["slippage_pct"]
+        try:
+            PAPER["slippage_pct"] = 0.10
+            wide = broker.attempt_exit("M", {"price_usd": 1.0, "liquidity_usd": 100_000},
+                                       force=True, reason="slip")
+        finally:
+            PAPER["slippage_pct"] = original
+        self.assertLess(wide["fill"], 1.0)
+        self.assertLess(wide["proceeds_usd"], 20)
+        self.assertAlmostEqual(wide["fill"], 0.90, places=6)
+
+    def test_two_processes_cannot_lose_a_ledger_update(self):
+        path = self.tmp / "ledger.json"
+        stamp = lambda: datetime(2026, 11, 8, 12, tzinfo=UTC)
+        PaperBroker(path, now=stamp)
+        barrier = threading.Barrier(2)
+        errors = []
+
+        def run(mint):
+            try:
+                broker = PaperBroker(path, now=stamp)
+                barrier.wait(timeout=5)
+                broker.buy(mint, mint, 20, 1.0, 100_000)
+            except Exception as exc:
+                errors.append(repr(exc))
+
+        threads = [threading.Thread(target=run, args=(mint,)) for mint in ("A", "B")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+            self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        saved = json.loads(path.read_text())
+        self.assertEqual(round(saved["cash"], 2), 960)
+        self.assertEqual(set(saved["positions"]), {"A", "B"})
 
 
 def _micro_budget(cfg) -> int:

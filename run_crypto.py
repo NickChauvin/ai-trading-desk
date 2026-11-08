@@ -153,8 +153,14 @@ def cycle(broker: PaperBroker | None, bench: Bench, session: requests.Session | 
              "pages_fetched": sample.pages_fetched, "pools_seen": sample.pools_seen,
              "sample_truncated": sample.truncated, "sample_claim": sample.claim,
              "shadow": shadow}
-    ranked = sorted(sample.tokens, key=lambda token: token["volume_h1"] / max(token["mcap_usd"], 1),
-                    reverse=True)
+    def _turnover(token: dict) -> float:
+        volume = token.get("volume_h1")
+        mcap = token.get("mcap_usd")
+        if not isinstance(volume, (int, float)) or not isinstance(mcap, (int, float)) or mcap <= 0:
+            return -1.0
+        return float(volume) / float(mcap)
+
+    ranked = sorted(sample.tokens, key=_turnover, reverse=True)
     chain_left, analyst_left = CHAIN_BUDGET, ANALYST_BUDGET
     model_budget = budget
     if analyze is None:

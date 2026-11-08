@@ -1,0 +1,251 @@
+{
+ "started_at": "2026-11-08T20:54:29.242611+00:00",
+ "model_enabled": false,
+ "model_id": "",
+ "prices_configured": false,
+ "note": "Read-only public sample. Not a strategy result and not a fill.",
+ "gecko": {
+  "pages_requested": 2,
+  "pages_fetched": 2,
+  "pools_seen": 40,
+  "tokens_after_pump_filter": 30,
+  "truncated": false,
+  "rate_limited": false,
+  "error_status": null,
+  "claim": "Bounded sample of GeckoTerminal new pools: at most 2 pages per cycle, whatever page size the API returns (historically 20). Not every launch.",
+  "free_kill": {
+   "missing_liquidity_usd": 1,
+   "age": 29
+  },
+  "missing_price": 0,
+  "passed_free_filters": 0
+ },
+ "chain": [
+  {
+   "mint": "4ZH5DBMyEyXE2YGZrFbNoyCfeyZheJJmAbnE6E2wpump",
+   "passed_free_filters": false,
+   "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.mainnet-beta.solana.com/"
+  }
+ ],
+ "quotes": [
+  {
+   "mint": "4ZH5DBMyEyXE2YGZrFbNoyCfeyZheJJmAbnE6E2wpump",
+   "quote": null
+  },
+  {
+   "mint": "En1KgxAAUoyDDYB6PJyGY4TTTz3oyNG8QzvhZKHJpump",
+   "quote": null
+  },
+  {
+   "mint": "AXU9KQvuTSuCysJEew4vh1ZHLVHYa33X618dmmD6pump",
+   "quote": null
+  }
+ ],
+ "known_pool_programs": [
+  {
+   "program": "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+   "found": true,
+   "executable": true,
+   "owner": "BPFLoaderUpgradeab1e11111111111111111111111"
+  },
+  {
+   "program": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+   "found": true,
+   "executable": true,
+   "owner": "BPFLoaderUpgradeab1e11111111111111111111111"
+  },
+  {
+   "program": "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",
+   "found": true,
+   "executable": true,
+   "owner": "BPFLoaderUpgradeab1e11111111111111111111111"
+  },
+  {
+   "program": "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
+   "found": true,
+   "executable": true,
+   "owner": "BPFLoaderUpgradeab1e11111111111111111111111"
+  },
+  {
+   "program": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+   "found": true,
+   "executable": true,
+   "owner": "BPFLoaderUpgradeab1e11111111111111111111111"
+  },
+  {
+   "program": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "found": true,
+   "executable": true,
+   "owner": "BPFLoaderUpgradeab1e11111111111111111111111"
+  },
+  {
+   "program": "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",
+   "found": true,
+   "executable": true,
+   "owner": "BPFLoaderUpgradeab1e11111111111111111111111"
+  }
+ ],
+ "finished_at": "2026-11-08T20:54:31.956051+00:00",
+ "elapsed_seconds": 2.713,
+ "http": [
+  {
+   "at": "2026-11-08T20:54:29.242685+00:00",
+   "method": "GET",
+   "host": "api.geckoterminal.com",
+   "status": 200,
+   "rate_headers": {}
+  },
+  {
+   "at": "2026-11-08T20:54:29.320168+00:00",
+   "method": "GET",
+   "host": "api.geckoterminal.com",
+   "status": 200,
+   "rate_headers": {}
+  },
+  {
+   "at": "2026-11-08T20:54:29.764268+00:00",
+   "method": "POST",
+   "host": "api.mainnet-beta.solana.com",
+   "status": 200,
+   "rate_headers": {
+    "x-ratelimit-tier": "free",
+    "x-ratelimit-method-limit": "50",
+    "x-ratelimit-method-remaining": "49",
+    "x-ratelimit-rps-limit": "250",
+    "x-ratelimit-rps-remaining": "249",
+    "x-ratelimit-endpoint-limit": "unlimited",
+    "x-ratelimit-endpoint-remaining": "-15482",
+    "x-ratelimit-conn-limit": "40",
+    "x-ratelimit-conn-remaining": "39",
+    "x-ratelimit-connrate-limit": "40",
+    "x-ratelimit-connrate-remaining": "39",
+    "x-ratelimit-pubsub-limit": "5",
+    "x-ratelimit-pubsub-remaining": "5"
+   }
+  },
+  {
+   "at": "2026-11-08T20:54:29.886551+00:00",
+   "method": "POST",
+   "host": "api.mainnet-beta.solana.com",
+   "status": 429,
+   "rate_headers": {
+    "retry-after": "10",
+    "x-ratelimit-tier": "free",
+    "x-ratelimit-method-limit": "0",
+    "x-ratelimit-method-remaining": "-1",
+    "x-ratelimit-rps-limit": "250",
+    "x-ratelimit-rps-remaining": "248",
+    "x-ratelimit-endpoint-limit": "unlimited",
+    "x-ratelimit-endpoint-remaining": "-15481",
+    "x-ratelimit-conn-limit": "40",
+    "x-ratelimit-conn-remaining": "39",
+    "x-ratelimit-connrate-limit": "40",
+    "x-ratelimit-connrate-remaining": "39",
+    "x-ratelimit-pubsub-limit": "5",
+    "x-ratelimit-pubsub-remaining": "5"
+   }
+  },
+  {
+   "at": "2026-11-08T20:54:30.325726+00:00",
+   "method": "GET",
+   "host": "api.dexscreener.com",
+   "status": 200,
+   "rate_headers": {}
+  },
+  {
+   "at": "2026-11-08T20:54:30.807681+00:00",
+   "method": "GET",
+   "host": "api.dexscreener.com",
+   "status": 200,
+   "rate_headers": {}
+  },
+  {
+   "at": "2026-11-08T20:54:31.311898+00:00",
+   "method": "GET",
+   "host": "api.dexscreener.com",
+   "status": 200,
+   "rate_headers": {}
+  },
+  {
+   "at": "2026-11-08T20:54:31.757421+00:00",
+   "method": "POST",
+   "host": "api.mainnet-beta.solana.com",
+   "status": 200,
+   "rate_headers": {
+    "x-ratelimit-tier": "free",
+    "x-ratelimit-method-limit": "50",
+    "x-ratelimit-method-remaining": "49",
+    "x-ratelimit-rps-limit": "250",
+    "x-ratelimit-rps-remaining": "249",
+    "x-ratelimit-endpoint-limit": "unlimited",
+    "x-ratelimit-endpoint-remaining": "-15495",
+    "x-ratelimit-conn-limit": "40",
+    "x-ratelimit-conn-remaining": "39",
+    "x-ratelimit-connrate-limit": "40",
+    "x-ratelimit-connrate-remaining": "39",
+    "x-ratelimit-pubsub-limit": "5",
+    "x-ratelimit-pubsub-remaining": "5"
+   }
+  }
+ ],
+ "http_calls": 8,
+ "http_errors": [
+  {
+   "at": "2026-11-08T20:54:29.886551+00:00",
+   "method": "POST",
+   "host": "api.mainnet-beta.solana.com",
+   "status": 429,
+   "rate_headers": {
+    "retry-after": "10",
+    "x-ratelimit-tier": "free",
+    "x-ratelimit-method-limit": "0",
+    "x-ratelimit-method-remaining": "-1",
+    "x-ratelimit-rps-limit": "250",
+    "x-ratelimit-rps-remaining": "248",
+    "x-ratelimit-endpoint-limit": "unlimited",
+    "x-ratelimit-endpoint-remaining": "-15481",
+    "x-ratelimit-conn-limit": "40",
+    "x-ratelimit-conn-remaining": "39",
+    "x-ratelimit-connrate-limit": "40",
+    "x-ratelimit-connrate-remaining": "39",
+    "x-ratelimit-pubsub-limit": "5",
+    "x-ratelimit-pubsub-remaining": "5"
+   }
+  }
+ ],
+ "followup": {
+  "started_at": "2026-11-08T20:55:00.507460+00:00",
+  "finished_at": "2026-11-08T20:55:12.797185+00:00",
+  "gecko_pages": 2,
+  "parsed_pools": 40,
+  "age_minutes_min": 0.5,
+  "age_minutes_max": 3.2,
+  "age_minutes_median": 2.6,
+  "free_kill": {
+   "age": 40
+  },
+  "passed_free_filters": 0,
+  "dex_one_pair": {
+   "status": 200,
+   "pairs": 1,
+   "priceUsd_present": true,
+   "priceUsd_null": false,
+   "liquidity_usd_key_present": false,
+   "pairCreatedAt_present": true,
+   "desk_quote": null,
+   "note": "Observed field presence only. Not a trade and not a price target."
+  },
+  "getTokenLargestAccounts": {
+   "status": 429,
+   "retry_after": "10",
+   "method_limit": "0",
+   "method_remaining": "-1",
+   "error": {
+    "code": 429,
+    "message": "Too many requests for a specific RPC call"
+   },
+   "waited_seconds_after_previous_429": 11
+  }
+ },
+ "mints_are_not_recommendations": true
+}

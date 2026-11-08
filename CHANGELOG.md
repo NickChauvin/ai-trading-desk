@@ -9,6 +9,8 @@
 - Model calls reserve a worst-case daily dollar budget before the request. Failures and retries that may bill are not refunded. Paid calls are off until model, prices, and budget are set. Quiet hours and free risk checks run first.
 - The scanner's two GeckoTerminal pages are described as a sample, not every launch.
 - Shadow mode does not open or mutate the paper ledger. Telegram alerts are off by default. Stocks refuse non-paper clients.
+- A holder sample that does not cover supply is not an approval. Missing prices stay missing. The paper ledger reloads under a file lock before a second writer mutates it. A quote timestamp is checked only when the quote carries one.
+- `docs/READINESS.md` records the 8 November 2026 bounded public snapshot: zero free-filter passes, and the public RPC blocked largest-account reads.
 
 ## v1.0.0 · 2026-10-26
 

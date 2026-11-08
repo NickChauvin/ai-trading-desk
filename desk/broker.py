@@ -9,9 +9,12 @@ from __future__ import annotations
 import json
 import math
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+import fcntl
 
 from config import DESK_TIMEZONE, EXITS, PAPER, RISK
 from desk.persist import atomic_write
@@ -45,6 +48,18 @@ def executable_quote(q) -> tuple[bool, str]:
         return False, "unexecutable quote: price missing or non-positive"
     if liq <= 0:
         return False, "unexecutable quote: no liquidity"
+    # Only a timestamp the quote itself carries can be checked. Absence is not
+    # turned into "now"; callers must treat freshness as unknown.
+    if "quoted_at" in q and q.get("quoted_at") is not None:
+        try:
+            quoted_at = float(q["quoted_at"])
+        except (TypeError, ValueError):
+            return False, "unexecutable quote: bad timestamp"
+        if not math.isfinite(quoted_at):
+            return False, "unexecutable quote: bad timestamp"
+        age = time.time() - quoted_at
+        if age > float(PAPER["max_quote_age_seconds"]) or age < -30:
+            return False, "stale quote"
     return True, "executable"
 
 
@@ -56,8 +71,11 @@ class PaperBroker:
         self.isolated = isolated or path is None
         self.path = None if self.isolated else Path(path)
         self._quotes_refreshed = False
+        self._held = 0
+        self._mtime = None
         if self.path is not None and self.path.exists():
             self.s = json.loads(self.path.read_text(encoding="utf-8"))
+            self._mtime = self.path.stat().st_mtime_ns
         else:
             self.s = self._fresh()
         self._normalize()
@@ -112,10 +130,56 @@ class PaperBroker:
     def _today(self, now=None) -> str:
         return self._clock(now).date().isoformat()
 
+    @contextmanager
+    def _locked(self):
+        """Exclusive ledger lock. A second process reloads the file before it mutates.
+
+        The lock is not held across network calls. Nested calls in this process
+        reuse it so a save inside buy cannot deadlock.
+        """
+        if self.path is None:
+            yield
+            return
+        if self._held:
+            self._held += 1
+            try:
+                yield
+            finally:
+                self._held -= 1
+            return
+        handle = open(self.path.with_name(self.path.name + ".lock"), "a+")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        self._held = 1
+        try:
+            self._refresh_from_disk()
+            yield
+        finally:
+            self._held = 0
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
+
+    def _refresh_from_disk(self) -> None:
+        if self.path is None or not self.path.exists():
+            return
+        current = self.path.stat().st_mtime_ns
+        if current == self._mtime:
+            return
+        self.s = json.loads(self.path.read_text(encoding="utf-8"))
+        self._normalize()
+        self._mtime = current
+
+    def _write(self) -> None:
+        atomic_write(self.path, json.dumps(self.s, indent=1))
+        self._mtime = self.path.stat().st_mtime_ns
+
     def _save(self) -> None:
         if self.path is None:
             return
-        atomic_write(self.path, json.dumps(self.s, indent=1))
+        if self._held:
+            self._write()
+            return
+        with self._locked():
+            self._write()
 
     def note_quotes_refreshed(self) -> None:
         """This process has attempted a fresh quote for every open position.
@@ -133,6 +197,10 @@ class PaperBroker:
         holdings marked at zero). Same-day restarts keep the stored baseline.
         Returns True when the baseline moved.
         """
+        with self._locked():
+            return self._roll(now)
+
+    def _roll(self, now=None) -> bool:
         today = self._today(now)
         if self.s.get("day") == today:
             return False
@@ -221,10 +289,13 @@ class PaperBroker:
     def buy(self, mint: str, symbol: str, ticket_usd: float, price: float,
             liquidity_usd: float | None = None) -> dict:
         """All-or-nothing simulated entry. Rejects without mutating state."""
-        snapshot = json.dumps(self.s)
+        with self._locked():
+            return self._buy(mint, symbol, ticket_usd, price, liquidity_usd)
+
+    def _buy(self, mint: str, symbol: str, ticket_usd: float, price: float,
+             liquidity_usd: float | None) -> dict:
         reject = self._reject_buy(ticket_usd, price, liquidity_usd)
         if reject:
-            self.s = json.loads(snapshot)
             return {"filled": False, "status": "rejected", "side": "buy", "mint": mint,
                     "symbol": symbol, "reason": reject, "proceeds_usd": 0.0}
         fill = price * (1 + PAPER["slippage_pct"])
@@ -265,6 +336,10 @@ class PaperBroker:
 
     def exit_signal(self, mint: str, q: dict | None, now: float | None = None):
         """Return (fraction, reason) or None. A missing quote is not a sell signal."""
+        with self._locked():
+            return self._exit_signal(mint, q, now)
+
+    def _exit_signal(self, mint: str, q: dict | None, now: float | None = None):
         if mint not in self.s["positions"]:
             return None
         ok, why = executable_quote(q)
@@ -281,6 +356,10 @@ class PaperBroker:
     def attempt_exit(self, mint: str, quote, now: float | None = None, *,
                      force: bool = False, reason: str | None = None) -> dict:
         """Try a simulated exit. Never fills at the stored last price."""
+        with self._locked():
+            return self._attempt_exit(mint, quote, now, force=force, reason=reason)
+
+    def _attempt_exit(self, mint: str, quote, now, *, force: bool, reason: str | None) -> dict:
         if mint not in self.s["positions"]:
             return {"status": "failed", "filled": False, "mint": mint, "reason": "no position",
                     "proceeds_usd": 0.0, "unresolved": False}
@@ -392,6 +471,7 @@ class PaperBroker:
             "proceeds_usd": proceeds,
             "unresolved": False,
             "cash": round(float(self.s["cash"]), 2),
+            "quote_freshness": "checked" if quote.get("quoted_at") is not None else "unknown",
             "execution": "simulated fill at quoted price with configured slippage, fee, and liquidity cap",
         }
         if (not partial and fraction >= 1) or pos["qty"] <= 1e-12:

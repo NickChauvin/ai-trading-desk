@@ -101,6 +101,7 @@ PAPER = {
     "fee_pct": 0.01,               # assumed fee, taken out of notional. Not an observed fill.
     "slippage_pct": 0.02,          # assumed 2% worse than the quoted price. Not an observed fill.
     "max_liquidity_fraction": 0.02,  # one simulated fill may use at most this share of quoted liquidity
+    "max_quote_age_seconds": 120,    # applied only when the quote itself carries quoted_at
 }
 
 CYCLE_SECONDS = 60                 # crypto scan cycle
@@ -111,7 +112,8 @@ BENCH_MINUTES = {
     "exited": 360,                 # stopped out or closed: no revenge re-entry for 6h
     "mint_authority": 100_000, "freeze_authority": 100_000,
     "top_wallet": 120, "top_10": 120, "no_sells": 240,
-    "unknown_holder": 30, "unavailable_concentration": 30,
+    "unknown_holder": 30, "unavailable_concentration": 30, "incomplete_sample": 30,
+    "missing_price": 10, "price": 10,
     "skip": 60, "watch": 15, "score": 20,
     "age": 10, "liquidity": 10, "volume": 10, "mcap": 15, "trades": 10,
 }

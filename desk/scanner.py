@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+import math
+
 import requests
 
 from config import SCAN
@@ -36,16 +38,28 @@ class PoolSample:
     claim: str = SAMPLE_CLAIM
 
 
-def _f(x) -> float:
+def _num(x):
+    """Parse a provider number. Missing or non-numeric stays None. Never invent a zero."""
+    if x is None or x == "":
+        return None
     try:
-        return float(x)
+        value = float(x)
     except (TypeError, ValueError):
-        return 0.0
+        return None
+    if not math.isfinite(value):
+        return None
+    return value
 
 
-def _age_minutes(iso: str | None) -> float:
+def _f(x) -> float:
+    """Only for fields where the caller has already decided absence means skip, not a price."""
+    value = _num(x)
+    return 0.0 if value is None else value
+
+
+def _age_minutes(iso: str | None):
     if not iso:
-        return 0.0
+        return None
     created = datetime.fromisoformat(iso.replace("Z", "+00:00"))
     return max(0.0, (datetime.now(timezone.utc) - created).total_seconds() / 60)
 
@@ -72,25 +86,44 @@ def parse_pool(pool: dict, symbols: dict[str, str]) -> dict | None:
     if not base_id.startswith("solana_"):
         return None
     mint = base_id.split("_", 1)[1]
-    tx_h1 = (attrs.get("transactions") or {}).get("h1") or {}
-    vol = attrs.get("volume_usd") or {}
-    chg = attrs.get("price_change_percentage") or {}
+    tx_h1 = (attrs.get("transactions") or {}).get("h1")
+    vol = attrs.get("volume_usd") if isinstance(attrs.get("volume_usd"), dict) else None
+    chg = attrs.get("price_change_percentage") if isinstance(attrs.get("price_change_percentage"), dict) else None
+    age = _age_minutes(attrs.get("pool_created_at"))
+    mcap = _num(attrs.get("market_cap_usd"))
+    if mcap is None:
+        mcap = _num(attrs.get("fdv_usd"))
     return {
         "mint": mint,
         "symbol": symbols.get(base_id, attrs.get("name", "?").split(" / ")[0]),
         "pool": attrs.get("address"),
         "dex": dex_id,
-        "price_usd": _f(attrs.get("base_token_price_usd")),
-        "mcap_usd": _f(attrs.get("market_cap_usd")) or _f(attrs.get("fdv_usd")),
-        "liquidity_usd": _f(attrs.get("reserve_in_usd")),
-        "volume_m5": _f(vol.get("m5")), "volume_h1": _f(vol.get("h1")),
-        "volume_h6": _f(vol.get("h6")), "volume_h24": _f(vol.get("h24")),
-        "buys_h1": int(tx_h1.get("buys") or 0), "sells_h1": int(tx_h1.get("sells") or 0),
-        "buyers_h1": int(tx_h1.get("buyers") or 0),
-        "change_m5": _f(chg.get("m5")), "change_h1": _f(chg.get("h1")),
-        "change_h6": _f(chg.get("h6")),
-        "age_minutes": round(_age_minutes(attrs.get("pool_created_at")), 1),
+        "price_usd": _num(attrs.get("base_token_price_usd")),
+        "mcap_usd": mcap,
+        "liquidity_usd": _num(attrs.get("reserve_in_usd")),
+        "volume_m5": _keyed(vol, "m5"), "volume_h1": _keyed(vol, "h1"),
+        "volume_h6": _keyed(vol, "h6"), "volume_h24": _keyed(vol, "h24"),
+        "buys_h1": _count(tx_h1, "buys"), "sells_h1": _count(tx_h1, "sells"),
+        "buyers_h1": _count(tx_h1, "buyers"),
+        "change_m5": _keyed(chg, "m5"), "change_h1": _keyed(chg, "h1"),
+        "change_h6": _keyed(chg, "h6"),
+        "age_minutes": None if age is None else round(age, 1),
     }
+
+
+def _keyed(container: dict | None, key: str):
+    if not isinstance(container, dict) or key not in container:
+        return None
+    return _num(container.get(key))
+
+
+def _count(container: dict | None, key: str):
+    if not isinstance(container, dict) or key not in container or container.get(key) is None:
+        return None
+    try:
+        return int(container[key])
+    except (TypeError, ValueError):
+        return None
 
 
 def new_tokens(session: requests.Session | None = None) -> PoolSample:
@@ -146,7 +179,16 @@ def new_tokens(session: requests.Session | None = None) -> PoolSample:
 
 
 def free_kill(token: dict) -> str | None:
-    """Pass one. Pure arithmetic on data we already hold. Returns the failed check or None."""
+    """Pass one. Pure arithmetic on data we already hold. Returns the failed check or None.
+
+    A missing field is not a zero. It cannot pass.
+    """
+    for key in ("price_usd", "age_minutes", "liquidity_usd", "volume_h1", "mcap_usd", "buys_h1", "sells_h1"):
+        if token.get(key) is None:
+            return f"missing_{key}"
+    price = float(token["price_usd"])
+    if not math.isfinite(price) or price <= 0:
+        return "price"
     if not SCAN["min_age_minutes"] <= token["age_minutes"] <= SCAN["max_age_hours"] * 60:
         return "age"
     if token["liquidity_usd"] < SCAN["min_liquidity_usd"]:
