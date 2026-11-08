@@ -6,14 +6,14 @@ The repo ships the core desk. Around it, every tool has one job and no two jobs 
 
 ## Signals: what's happening right now
 
-- **pump.fun**: the market itself. Every launch, every bonding curve, every graduation.
+- **pump.fun**: the venue. This repo samples at most two pages of new pools per cycle. It does not see every launch.
 - **Grok Bot**: reads X around the clock. Narratives, the project's own account, who's talking about a ticker. It reports what it sees and never decides.
 - **Grok**: the quick X lookup on one post or one account.
 - **REA**: the research seat. When a narrative starts moving, it does the deep dive.
 
 ## Brains: who judges
 
-- **Claude Opus 5.5**: the analyst seat in this repo. Fills the typed thesis.
+- **Configured model**: the analyst seat, off until you set an id, prices, and a daily budget. This repo does not ship a price list.
 - **ChatGPT**: the second opinion. Same token, same fields, a separate read. When the two disagree, skip.
 - **Jev**: typed yes/no gates with probabilities instead of prose. Built for bounded decisions.
 

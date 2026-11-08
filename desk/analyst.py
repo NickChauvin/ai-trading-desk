@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from config import ANALYST_MAX_TOKENS, ANALYST_MODEL
+from desk.budget import ModelBudget
 
 
 # ---------- the shapes the model must fill ----------
@@ -95,34 +95,82 @@ def token_state(t: dict, f: dict, links: dict) -> str:
             "Produce the thesis.")
 
 
-def analyze_token(t: dict, f: dict, links: dict, client=None) -> TokenThesis:
+def _cap(text: str, max_tokens: int) -> str:
+    """Keep the sent prompt inside the char budget used for the reservation.
+
+    Four characters per token is a rough ceiling, not a tokenizer. The note is
+    omitted when the cap is too small to hold it.
+    """
+    limit = max(1, int(max_tokens)) * 4
+    if len(text) <= limit:
+        return text
+    note = "\n[truncated]"
+    if len(note) >= limit:
+        return text[:limit]
+    return text[: limit - len(note)] + note
+
+
+def _call(budget: ModelBudget, client, *, purpose: str, system: str, content: str, output_format):
+    """Reserve worst-case cost, then call. Failures are not refunded.
+
+    Retries stay inside the single reservation. The output cap on the wire is
+    the configured max, not a larger default.
+    """
+    reservation = budget.reserve(purpose)
     if client is None:
-        from anthropic import Anthropic   # imported late so tests run without the SDK
-        client = Anthropic()
-    resp = client.messages.parse(
-        model=ANALYST_MODEL,
-        max_tokens=ANALYST_MAX_TOKENS,
-        system=TOKEN_PROMPT,
-        messages=[{"role": "user", "content": token_state(t, f, links)}],
-        output_format=TokenThesis,
+        try:
+            from anthropic import Anthropic
+            client = Anthropic()
+        except Exception as exc:
+            budget.complete(reservation, ok=False, error=type(exc).__name__)
+            raise
+    attempts = 1 + int(reservation.get("max_billable_retries") or 0)
+    last = None
+    content = _cap(content, reservation.get("max_input_tokens") or budget.cfg["max_input_tokens"])
+    model = budget.cfg.get("model") or ""
+    if purpose == "weekly_review" and str(budget.cfg.get("review_model") or "").strip():
+        model = budget.cfg["review_model"]
+    for attempt in range(1, attempts + 1):
+        try:
+            payload = {
+                "model": model,
+                "max_tokens": int(reservation["max_output_tokens"]),
+                "system": system,
+                "messages": [{"role": "user", "content": content}],
+            }
+            if output_format is None:
+                response = client.messages.create(**payload)
+            else:
+                response = client.messages.parse(**payload, output_format=output_format)
+        except Exception as exc:
+            last = exc
+            continue
+        budget.complete(reservation, ok=True, attempts=attempt)
+        return response
+    budget.complete(reservation, ok=False, error=type(last).__name__ if last else "error",
+                    attempts=attempts)
+    raise last
+
+
+def analyze_token(t: dict, f: dict, links: dict, client=None, budget: ModelBudget | None = None) -> TokenThesis:
+    budget = budget if budget is not None else ModelBudget.from_config()
+    response = _call(
+        budget, client, purpose="analyze_token", system=TOKEN_PROMPT,
+        content=token_state(t, f, links), output_format=TokenThesis,
     )
-    th = resp.parsed_output
-    th.score = max(0, min(10, int(th.score)))
-    return th
+    thesis = response.parsed_output
+    thesis.score = max(0, min(10, int(thesis.score)))
+    return thesis
 
 
-def analyze_stock(symbol: str, market_data: str, news: list[str], client=None) -> StockThesis:
-    if client is None:
-        from anthropic import Anthropic
-        client = Anthropic()
-    news_block = "\n\n".join(wrap_untrusted(n) for n in news) or "(no news)"
-    resp = client.messages.parse(
-        model=ANALYST_MODEL,
-        max_tokens=ANALYST_MAX_TOKENS,
-        system=STOCK_PROMPT,
-        messages=[{"role": "user", "content":
-                   f"Symbol: {symbol}\n\nMarket data:\n{market_data}\n\n"
-                   f"News:\n{news_block}\n\nProduce a trade thesis."}],
+def analyze_stock(symbol: str, market_data: str, news: list[str], client=None,
+                  budget: ModelBudget | None = None) -> StockThesis:
+    budget = budget if budget is not None else ModelBudget.from_config()
+    news_block = "\n\n".join(wrap_untrusted(item) for item in news) or "(no news)"
+    response = _call(
+        budget, client, purpose="analyze_stock", system=STOCK_PROMPT,
+        content=(f"Symbol: {symbol}\n\nMarket data:\n{market_data}\n\n"
+                 f"News:\n{news_block}\n\nProduce a trade thesis."),
         output_format=StockThesis,
     )
-    return resp.parsed_output
+    return response.parsed_output

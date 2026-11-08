@@ -4,13 +4,13 @@
 
 # The AI Trading Desk
 
-**Every launch scanned. Every dev wallet checked. Claude scores what's left, code sizes the trade, and you only see what survives.**
+**A bounded sample of new pools. A sampled holder check, not a dev-wallet audit. An optional model scores what survives, code sizes the trade, and paid calls stay off until you configure them.**
 
-[![Tests](https://github.com/SpikeCalls/ai-trading-desk/actions/workflows/tests.yml/badge.svg)](https://github.com/SpikeCalls/ai-trading-desk/actions/workflows/tests.yml)
+[![Tests](https://github.com/NickChauvin/ai-trading-desk/actions/workflows/tests.yml/badge.svg)](https://github.com/NickChauvin/ai-trading-desk/actions/workflows/tests.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-2EE59D?style=flat-square&labelColor=0B0F16)
 ![Mode](https://img.shields.io/badge/mode-paper%20only-5AA9FF?style=flat-square&labelColor=0B0F16)
 ![Keys](https://img.shields.io/badge/private%20keys-zero-FF4D6D?style=flat-square&labelColor=0B0F16)
-![Analyst](https://img.shields.io/badge/analyst-Claude%20Opus%205.5-FFB547?style=flat-square&labelColor=0B0F16)
+![Analyst](https://img.shields.io/badge/analyst-paid%20calls%20off%20by%20default-FFB547?style=flat-square&labelColor=0B0F16)
 [![License](https://img.shields.io/badge/license-MIT-A78BFA?style=flat-square&labelColor=0B0F16)](LICENSE)
 
 [Quick start](#-quick-start) · [How it works](#-how-it-works) · [The stack](#-the-full-stack) · [Config](#-config) · [FAQ](#-faq) · [Telegram](https://t.me/+Ykc8YKaJR6Q3NDNk)
@@ -21,7 +21,7 @@
 
 > **The AI reads. The code decides. You sign.**
 >
-> A five-seat desk for pump.fun launches, any Solana token, and US stocks. It reads every launch, kills what plain facts can kill, lets Claude score the survivors with a typed thesis, sizes the trade with rules no model can touch, and pings you. It never holds a key and never signs a transaction.
+> A five-seat paper desk for a sample of pump.fun launches and for US stocks. Each cycle reads at most two pages of GeckoTerminal's newest pools, kills what those rows and a 20-account holder sample can kill, and can ask a model you configure to score the survivors. Code sizes the trade. It never holds a key and never signs a transaction. Paid model calls and Telegram alerts are off unless you turn them on.
 
 <img src="assets/numbers.png" alt="1,000 launches, 2 survive" width="100%">
 
@@ -36,15 +36,16 @@ The information that kills a bad trade is public and one click away: the holder 
 ## ⚡ Quick start
 
 ```bash
-git clone https://github.com/SpikeCalls/ai-trading-desk.git
+git clone https://github.com/NickChauvin/ai-trading-desk.git
 cd ai-trading-desk
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env              # add ANTHROPIC_API_KEY (Telegram + RPC optional)
+cp .env.example .env              # paid calls and Telegram stay off until you opt in
 
-make test                         # 17 offline tests, no keys needed
-make shadow                       # one full cycle: scan, check, score, alert. No position.
-make paper                        # paper trading, every 60 seconds
+make test                         # offline tests, no keys and no network
+python demos/offline_demo.py      # invented fixtures, no API keys, no network
+make shadow                       # one cycle against an isolated book, not the paper ledger
+make paper                        # simulated paper ledger, every 60 seconds
 ```
 
 Stocks on a free Alpaca paper account:
@@ -79,15 +80,17 @@ flowchart LR
 
 | Seat | File | Job | Model? |
 | --- | --- | --- | :---: |
-| 🚀 **Scanner** | [`desk/scanner.py`](desk/scanner.py) | Fresh pump.fun / PumpSwap pools from GeckoTerminal. Kills on age, liquidity, volume, market cap, trade count and sell ratio. | ❌ |
-| ⛓️ **Chain check** | [`desk/chain.py`](desk/chain.py) | Mint and freeze authority, top wallet and top 10 share of **real wallets**. The curve and pool are excluded by owner program. | ❌ |
-| 🧠 **Analyst** | [`desk/analyst.py`](desk/analyst.py) | Claude Opus 5.5 fills a typed `TokenThesis`: verdict, score, red flags, shape, invalidation, sources. Never "buy". | ✅ |
+| 🚀 **Scanner** | [`desk/scanner.py`](desk/scanner.py) | At most two pages of GeckoTerminal new pools, then pump.fun / PumpSwap only. Kills on age, liquidity, volume, market cap, trade count and sell ratio. | ❌ |
+| ⛓️ **Chain check** | [`desk/chain.py`](desk/chain.py) | Mint and freeze authority, plus concentration inside the largest 20 token accounts. Only known pool/curve programs are removed. Unknown owner data fails closed. | ❌ |
+| 🧠 **Analyst** | [`desk/analyst.py`](desk/analyst.py) | Optional. Off until `MODEL` has an explicit model id, prices, and a daily dollar budget. Fills a typed `TokenThesis`. Never "buy". | ✅ |
 | 🛡️ **Risk engine** | [`desk/risk.py`](desk/risk.py) | Verdict and score gates, quiet hours, daily loss stop, max positions. Ticket = `min(risk cap, size cap, 2% of pool)`. | ❌ |
 | ✍️ **You** | [`desk/broker.py`](desk/broker.py) · [`desk/ops.py`](desk/ops.py) | Paper fills with fees and slippage, rule-based exits, journal, bench, Telegram alerts, kill switch. | ❌ |
 
 ### Same token, opposite verdict
 
-On a pump.fun token the biggest holder is always the bonding curve. Count it as a whale and everything looks rugged. The desk asks the chain who owns each top account, drops program-owned ones, and measures only wallets that can dump on you.
+On a pump.fun token the biggest holder is often the bonding curve. The desk asks the chain who owns each sampled token account and drops that account only when the owner is positively owned by a known pool or curve program. Unknown programs and missing metadata fail closed. Passing the percentage caps is not a holder-safety certificate.
+
+Holder concentration uses at most the largest 20 token accounts, aggregates balances only inside that sample, and excludes an account only when its owner is positively identified as a known pool or curve program. Unknown or missing owner metadata fails closed. If the sampled balances do not account for total supply, the token is not approved. If the RPC cannot return largest accounts, concentration is unavailable and the token is not approved. This is not a complete holder census and not a developer-wallet audit. Even a working provider only returns the largest accounts, so coverage of a widely held mint stays incomplete.
 
 <img src="assets/holders.png" alt="Same token, opposite verdict" width="100%">
 
@@ -119,7 +122,8 @@ Every string a stranger wrote (token names, links, headlines) reaches the model 
 | Stop | -35% from entry |
 | Take profit | sell half at 2x, once |
 | Volume decay | close when 6h volume < 20% of the 24h pace (after 30 min held) |
-| Time out | 24 hours, or the moment the price can't be fetched |
+| Time out | 24 hours, if a quote is still executable |
+| Missing quote | failed exit: holding stays open, cash unchanged, zero-recovery mark |
 | No revenge | a closed token sits out 6 hours |
 
 ## 🧩 The full stack
@@ -130,11 +134,11 @@ The repo ships the core desk. Around it, every tool has one job:
 
 | Layer | Tool | Job |
 | --- | --- | --- |
-| **Signals** | pump.fun | The market: every launch, curve and graduation |
+| **Signals** | pump.fun | The venue this desk samples. The scanner does not see every launch |
 | | Grok Bot | Reads X 24/7: narratives, project accounts, who's talking |
 | | Grok | Quick X lookups on one post or one account |
 | | REA | Research seat: deep dives on a narrative |
-| **Brains** | Claude Opus 5.5 | The analyst seat in this repo |
+| **Brains** | Configured model | Optional analyst. Off until you set the id, prices, and budget |
 | | ChatGPT | Second opinion. If the two disagree, skip |
 | | Jev | Typed yes/no gates with probabilities, in milliseconds |
 | **Build + memory** | Claude Code | Builds and fixes the desk |
@@ -155,15 +159,16 @@ Every number lives in [`config.py`](config.py). Retune there and nowhere else. T
 | | min trades 1h / sell ratio | 120 / 0.15 |
 | Chain | max top wallet / top 10 | 5% / 25% |
 | | mint or freeze authority | hard no |
-| Analyst | model / min score | `claude-opus-5-5` / 7 |
+| Analyst | model / min score | unset / 7. Paid calls off |
 | Risk | risk per trade / max position | 1% / 2% of equity |
 | | max share of pool | 2% |
-| | daily loss stop / max positions | -3% / 3 |
-| | quiet hours | 01:00 to 07:00 local |
+| | aggregate open risk | 3% of conservative equity |
+| | daily loss gate / max positions | -3% of the day's starting equity / 3. Not a guaranteed max loss |
+| | quiet hours | 01:00 to 07:00 in `DESK_TIMEZONE` (UTC) |
 
 ## 💸 What it costs
 
-The analyst only sees tokens that survived every free check, capped at 3 calls per cycle. One call is roughly 1,500 tokens in and 600 out: about **$0.02** at Opus 5.5 list prices ($4 / $20 per million). A busy day of 300 calls is about $5. A dead market costs almost nothing. Check Anthropic's pricing page for current rates.
+Paid calls are disabled. This repo does not know which models are offered or what they cost. A call happens only after `MODEL["enabled"]` is true and you have set the model id, input price, output price, output-token cap, and a daily dollar budget from your provider's current docs. Before each request the desk reserves the worst case (input cap + output cap, including retries that may still be billed) against that budget and writes it durably. A failed request is not refunded. Quiet hours, the daily-loss gate, cash, and aggregate open risk are checked before the model is called. The per-cycle count of 3 is an extra limiter, not a dollar cap.
 
 ## 📊 Sunday review
 
@@ -201,14 +206,17 @@ ai-trading-desk/
 2. The model never sizes a position or places an order.
 3. Every third-party string reaches the model wrapped as untrusted text.
 4. A missing number is missing, never a pass.
-5. Paper first. Weeks, not days. Never trust a backtest of model judgement: it may remember how the story ended.
+5. A missing or unexecutable quote never books proceeds.
+6. Paid model calls and Telegram alerts stay off unless you explicitly enable them.
+7. Stocks talk only to an Alpaca paper client. There is no live switch.
+8. Paper first. There is no evidence in this repository that the desk is profitable or fit for real money.
 
 ## ❓ FAQ
 
 <details>
 <summary><b>Can it trade live on Solana?</b></summary>
 
-No, by design. It alerts you with the mint, links and the thesis, and you decide in your own terminal. That signature is the last check.
+No. There is no signing code in this repo. A paper alert is a local line unless you set `ALERTS_ENABLED=true`. The signature, if you make one, happens in your own terminal, outside this process.
 </details>
 
 <details>
@@ -226,8 +234,22 @@ A good week on paper is noise. A good quarter is a starting point. The journal i
 <details>
 <summary><b>Will this make money?</b></summary>
 
-Nobody can promise that. Most memecoins go to zero and most strategies lose money, automated ones included. The desk is built so that when you're wrong, you lose small, you know why, and you find out on paper first.
+No. There is no evidence in this repository that the desk is profitable or fit for real money. Most memecoins go to zero and most strategies lose money, automated ones included. The daily-loss gate only blocks new entries. It does not cap the loss on an open or unresolved holding.
 </details>
+
+## Limitations
+
+Bounded sample of GeckoTerminal new pools: at most 2 pages per cycle, whatever page size the API returns (historically 20). Not every launch.
+
+Paper fills are a model, not a market. A missing or unexecutable quote never books proceeds. The holding stays open, cash and realized P&L stay unchanged, and the conservative mark is zero recovery, shown separately from realized loss. Entries are all-or-nothing and must fit in cash, the aggregate open-risk limit, and PAPER['max_liquidity_fraction'] of quoted liquidity. Exits assume PAPER['slippage_pct'] against the trader and PAPER['fee_pct'] of notional, and may fill only up to that liquidity fraction. The unfilled remainder stays open. None of these numbers is an observed execution.
+
+The daily-loss counter uses `DESK_TIMEZONE` (UTC by default), not the host's local clock. It rolls after this process has refreshed quotes, including across a restart: a restart that crosses midnight keeps yesterday's baseline until that refresh, so a stale last price is not booked as the new day's equity. After the roll, new entries can be allowed again even while an unresolved holding is still a total loss. That is why the gate is not a maximum-loss guarantee. Unresolved cost still counts in full toward the aggregate open-risk limit.
+
+Shadow mode journals against a fresh hypothetical account. It does not open or change `paper_ledger.json`.
+
+Alerts print locally. Telegram is used only when `ALERTS_ENABLED` is true and both Telegram variables are set. Stocks refuse any client that is not Alpaca paper. `KILL` stops new entries and attempts simulated exits; it reports holdings that are still open.
+
+There is no evidence in this repository that the desk is profitable or fit for real money.
 
 ## 🤝 Contributing
 
@@ -242,6 +264,8 @@ Daily alpha, setups and desk updates: **[Telegram](https://t.me/+Ykc8YKaJR6Q3NDN
 <div align="center">
 
 **Not financial advice.** Paper first. DYOR.
+
+Based on SpikeCalls/ai-trading-desk. License and copyright unchanged.
 
 MIT © SpikeCalls
 
