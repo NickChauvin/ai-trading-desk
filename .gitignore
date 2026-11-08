@@ -3,6 +3,12 @@
 __pycache__/
 journal.jsonl
 paper_ledger.json
+paper_ledger.json.lock
+candidate_queue.json
+candidate_queue.json.lock
+holder_readiness.json
+holder_readiness.json.lock
+shadow_state/
 model_budget.json
 model_budget.json.tmp
 model_budget.json.lock

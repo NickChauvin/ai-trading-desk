@@ -11,6 +11,7 @@
 - Shadow mode does not open or mutate the paper ledger. Telegram alerts are off by default. Stocks refuse non-paper clients.
 - A holder sample that does not cover supply is not an approval. Missing prices stay missing. The paper ledger reloads under a file lock before a second writer mutates it. A quote timestamp is checked only when the quote carries one.
 - `docs/READINESS.md` records the 8 November 2026 bounded public snapshot: zero free-filter passes, and the public RPC blocked largest-account reads.
+- Too-young discoveries are retained with their launch time and refreshed after 10 minutes, off the two-page feed, with pacing and a 429 stop. `getTokenLargestAccounts` must succeed or concentration stays unavailable.
 
 ## v1.0.0 · 2026-10-26
 

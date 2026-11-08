@@ -108,6 +108,7 @@ def parse_pool(pool: dict, symbols: dict[str, str]) -> dict | None:
         "change_m5": _keyed(chg, "m5"), "change_h1": _keyed(chg, "h1"),
         "change_h6": _keyed(chg, "h6"),
         "age_minutes": None if age is None else round(age, 1),
+        "pool_created_at": attrs.get("pool_created_at") if isinstance(attrs.get("pool_created_at"), str) else None,
     }
 
 
@@ -176,6 +177,46 @@ def new_tokens(session: requests.Session | None = None) -> PoolSample:
             seen.add(token["mint"])
             sample.tokens.append(token)
     return sample
+
+
+def refresh_token(mint: str, session: requests.Session | None = None) -> dict:
+    """One GeckoTerminal token-pools page for a mint that left the new-pool feed.
+
+    A 429 stops the caller. Missing fields stay missing. This is not another
+    pass over every launch.
+    """
+    client = session or requests.Session()
+    try:
+        response = client.get(
+            f"{GT}/networks/solana/tokens/{mint}/pools",
+            params={"page": 1},
+            headers=HEADERS,
+            timeout=20,
+        )
+    except requests.RequestException as exc:
+        return {"rate_limited": False, "token": None, "reason": "refresh_failed",
+                "detail": type(exc).__name__}
+    if response.status_code == 429:
+        return {"rate_limited": True, "token": None, "reason": "rate_limited",
+                "retry_after": response.headers.get("Retry-After"), "http_status": 429}
+    if response.status_code != 200:
+        return {"rate_limited": False, "token": None, "reason": "refresh_failed",
+                "http_status": response.status_code}
+    try:
+        body = response.json()
+    except ValueError:
+        return {"rate_limited": False, "token": None, "reason": "malformed_refresh"}
+    symbols = {
+        item["id"]: item["attributes"].get("symbol", "?")
+        for item in body.get("included", []) if isinstance(item, dict) and item.get("type") == "token"
+    }
+    for pool in body.get("data") or []:
+        if not isinstance(pool, dict):
+            continue
+        token = parse_pool(pool, symbols)
+        if token and token["mint"] == mint:
+            return {"rate_limited": False, "token": token, "reason": None, "http_status": 200}
+    return {"rate_limited": False, "token": None, "reason": "incomplete_refresh", "http_status": 200}
 
 
 def free_kill(token: dict) -> str | None:

@@ -99,7 +99,13 @@ def main() -> None:
 
     # Integration probes are not approvals. Prefer filter survivors, else the
     # first parsed mints, so a quiet market still shows the provider shape.
-    chain_targets = passed[:MAX_CHAIN] or [token["mint"] for token in sample.tokens[:1]]
+    from desk.chain import HolderReadiness, probe_largest_accounts
+    readiness = HolderReadiness(ROOT / "shadow_state" / "holder_readiness.json")
+    snapshot["holder_probe"] = probe_largest_accounts(session, readiness=readiness)
+    time.sleep(PAUSE_SECONDS)
+    chain_targets = []
+    if snapshot["holder_probe"].get("supported"):
+        chain_targets = passed[:MAX_CHAIN] or [token["mint"] for token in sample.tokens[:1]]
     chain_rows = []
     for mint in chain_targets:
         row = {"mint": mint, "passed_free_filters": mint in passed}

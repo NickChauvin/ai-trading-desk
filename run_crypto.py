@@ -27,6 +27,8 @@ import requests
 from config import CYCLE_SECONDS, DESK_TIMEZONE, PAPER
 from desk import analyst, chain, scanner
 from desk.broker import EXECUTION_ASSUMPTIONS, PaperBroker
+from desk.chain import HolderReadiness
+from desk.watch import CandidateQueue
 from desk.budget import BudgetError, ModelBudget
 from desk.ops import Bench, alert, journal, killed, load_env, log_model_cost, log_reject
 from desk.risk import Account, check_token_trade, precheck_token
@@ -57,6 +59,14 @@ def shadow_account() -> Account:
     """Hypothetical book. Not the paper ledger and not allowed to touch it."""
     equity = float(PAPER["starting_equity_usd"])
     return Account(equity, 0.0, 0, cash=equity, open_risk_usd=0.0, day_start=equity)
+
+
+def _safe_error(exc: Exception) -> str:
+    """Drop the request URL. A configured RPC endpoint may embed an API key."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status:
+        return f"{type(exc).__name__}: HTTP {status}"
+    return type(exc).__name__
 
 
 def _public(result: dict) -> dict:
@@ -128,7 +138,7 @@ def stop_for_kill(broker: PaperBroker, quotes: dict) -> dict:
 def cycle(broker: PaperBroker | None, bench: Bench, session: requests.Session | None = None,
           shadow: bool = False, *, now: datetime | None = None, tokens=None,
           quote_for=None, facts_for=None, analyze=None, budget: ModelBudget | None = None,
-          links_for=None) -> dict:
+          links_for=None, queue=None, refresh_for=None, sleep=None, readiness=None) -> dict:
     now = now or datetime.now(ZoneInfo(DESK_TIMEZONE))
     if shadow:
         # Do not read or write the passed broker. It may be the real paper book.
@@ -160,7 +170,20 @@ def cycle(broker: PaperBroker | None, bench: Bench, session: requests.Session | 
             return -1.0
         return float(volume) / float(mcap)
 
-    ranked = sorted(sample.tokens, key=_turnover, reverse=True)
+    retained = []
+    if queue is not None:
+        queue.observe(sample.tokens, now)
+        revisit = queue.refresh_due(
+            refresh_for or scanner.refresh_token, now, session=session,
+            sleep=time.sleep if sleep is None else sleep,
+            skip_mints={token["mint"] for token in sample.tokens if token.get("mint")},
+        )
+        retained = revisit["ready"]
+        stats["revisits"] = revisit["fetched"]
+        stats["revisit_rate_limited"] = revisit["stopped_for_rate_limit"]
+        stats["retained"] = len(queue.state["candidates"])
+
+    ranked = sorted([*sample.tokens, *retained], key=_turnover, reverse=True)
     chain_left, analyst_left = CHAIN_BUDGET, ANALYST_BUDGET
     model_budget = budget
     if analyze is None:
@@ -177,9 +200,14 @@ def cycle(broker: PaperBroker | None, bench: Bench, session: requests.Session | 
             stats["benched"] += 1
             continue
         if (reason := scanner.free_kill(token)):
-            bench.sit(token["mint"], reason)
-            log_reject("scanner", reason, mint=token["mint"], symbol=token["symbol"], shadow=shadow)
+            waiting = queue is not None and reason == "age" and token.get("pool_created_at")
+            if not waiting:
+                bench.sit(token["mint"], reason)
+            log_reject("scanner", reason, mint=token["mint"], symbol=token["symbol"],
+                       shadow=shadow, waiting=waiting)
             stats["free"] += 1
+            if waiting:
+                stats["waiting"] = stats.get("waiting", 0) + 1
             continue
 
         account = shadow_account() if book is None else account_from(book)
@@ -194,9 +222,10 @@ def cycle(broker: PaperBroker | None, bench: Bench, session: requests.Session | 
             break
 
         try:
-            facts_row = facts_for(token) if facts_for else chain.facts(token["mint"], session)
+            facts_row = facts_for(token) if facts_for else chain.facts(
+                token["mint"], session, readiness=readiness, now=now)
         except Exception as exc:
-            journal("error", stage="chain", mint=token["mint"], error=str(exc))
+            journal("error", stage="chain", mint=token["mint"], error=_safe_error(exc))
             continue
         chain_left -= 1
         if (reason := chain.chain_kill(facts_row)):
@@ -265,6 +294,7 @@ def main():
     load_env()
     broker = open_broker(shadow=args.shadow)
     bench, session = Bench(), requests.Session()
+    queue, readiness = CandidateQueue(), HolderReadiness()
     while True:
         if killed():
             if args.shadow:
@@ -289,7 +319,7 @@ def main():
                     assumptions=EXECUTION_ASSUMPTIONS)
             return
         try:
-            stats = cycle(broker, bench, session, args.shadow)
+            stats = cycle(broker, bench, session, args.shadow, queue=queue, readiness=readiness)
             equity = "shadow" if args.shadow else f"${broker.equity()}"
             print(f"cycle {stats} equity {equity}")
         except Exception as exc:

@@ -90,7 +90,7 @@ flowchart LR
 
 On a pump.fun token the biggest holder is often the bonding curve. The desk asks the chain who owns each sampled token account and drops that account only when the owner is positively owned by a known pool or curve program. Unknown programs and missing metadata fail closed. Passing the percentage caps is not a holder-safety certificate.
 
-Holder concentration uses at most the largest 20 token accounts, aggregates balances only inside that sample, and excludes an account only when its owner is positively identified as a known pool or curve program. Unknown or missing owner metadata fails closed. If the sampled balances do not account for total supply, the token is not approved. This is not a complete holder census and not a developer-wallet audit.
+Holder concentration uses at most the largest 20 token accounts, aggregates balances only inside that sample, and excludes an account only when its owner is positively identified as a known pool or curve program. Unknown or missing owner metadata fails closed. If the sampled balances do not account for total supply, the token is not approved. If the RPC cannot return largest accounts, concentration is unavailable and the token is not approved. This is not a complete holder census and not a developer-wallet audit. Even a working provider only returns the largest accounts, so coverage of a widely held mint stays incomplete.
 
 <img src="assets/holders.png" alt="Same token, opposite verdict" width="100%">
 

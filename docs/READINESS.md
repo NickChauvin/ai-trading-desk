@@ -44,6 +44,32 @@ Model scoring was off (`MODEL["enabled"]` is false, model id empty, prices unset
 
 Dollar cost of this evaluation: **0**. No model request was reserved. GeckoTerminal allowed both pages (about 20 pools each). It did not send a rate-limit header on these calls. The public RPC's free tier allowed `getAccountInfo` and `getMultipleAccounts` for the program list, and blocked `getTokenLargestAccounts`. DexScreener allowed the three GETs and did not supply liquidity on the pair that was inspected. Dependencies in `requirements.txt` are minimum versions, not hash-pinned.
 
+## Revisit queue and holder method — same evening
+
+Too-young pools are now kept in `candidate_queue.json` with the discovery time and the provider's `pool_created_at`. They are refreshed only once they reach 10 minutes, even if they have left the two-page feed. A refresh replaces market fields from one new response; a missing price or liquidity stays missing and fails. HTTP 429 stops that batch and waits for `Retry-After`. The queue is capped, deduped, and reloaded under a file lock. It is still not every launch: anything that never appeared in a two-page sample is never retained.
+
+Holder concentration was not loosened. `getTokenLargestAccounts` is required. On the public endpoint it is not available:
+
+| | |
+| --- | --- |
+| Probe | 2026-11-08T21:03:20.019575Z to 2026-11-08T21:03:22.616412Z |
+| GeckoTerminal | 2 pages, 40 pools, 19 after the pump filter, **0** past the free filters (all 19 rejected for age) |
+| `getTokenLargestAccounts` | HTTP 429 at 21:03:20.538512Z, `retry-after: 10`, method limit **0** |
+| Chain reads after that | none; the block is not treated as a pass |
+| DexScreener quotes formed | 0 |
+
+The one-cycle shadow command then ran 2026-11-08T21:03:22.777502Z to 2026-11-08T21:03:22.854506Z. It made 2 HTTP calls (the feed only; the holder method was still inside its backoff), retained 19 waiting mints, revisited 0 because none were due, opened no paper ledger, and made no model call. Caps in the script are 1 cycle, 30 seconds, and 8 HTTP calls, and arguments cannot raise them.
+
+```bash
+python scripts/bounded_shadow_trial.py
+```
+
+Do not start a longer trial from this. Reliable holder data needs a Solana JSON-RPC endpoint you provision that allows `getAccountInfo`, `getTokenLargestAccounts`, and `getMultipleAccounts`. Put that URL in `SOLANA_RPC_URL`. Do not commit the key. This run did not create an account and did not ask for one. Public `https://api.mainnet-beta.solana.com` is not that endpoint today.
+
+Even with a working provider, the gate still reads at most 20 accounts and fails closed unless those balances account for total supply. A widely held mint will not pass. `developer_wallet_audited` remains false. That is a property of the sample, not something a faster RPC removes.
+
+`python -m unittest discover -s tests -q` after these changes: **70 tests, OK.**
+
 ## What remains, and the only plan that stays honest
 
 Do not start `run_crypto.py` in a loop and do not enable the model or a private RPC just to manufacture a result.

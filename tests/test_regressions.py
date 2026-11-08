@@ -880,10 +880,11 @@ class LiveShape(unittest.TestCase):
         original = chain.rpc
         chain.rpc = boom
         try:
-            with self.assertRaises(requests.HTTPError):
-                chain.facts("MINT")
+            facts = chain.facts("MINT")
         finally:
             chain.rpc = original
+        self.assertEqual(facts["concentration_failure"], "holder_method_unavailable")
+        self.assertEqual(chain.chain_kill(facts), "holder_method_unavailable")
 
 
 class Adversarial(TempCase):

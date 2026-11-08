@@ -7,14 +7,27 @@ are removed. Missing or unknown owner metadata fails closed.
 """
 from __future__ import annotations
 
+import json
 import os
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import requests
 
 from config import CHAIN
+from desk.persist import atomic_write
 
-RPC = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
 SYSTEM_PROGRAM = "11111111111111111111111111111111"
+READINESS_PATH = "holder_readiness.json"
+
+
+def rpc_url() -> str:
+    """Endpoint from SOLANA_RPC_URL, otherwise the public default.
+
+    The value is not logged. URLs from vendors often embed an API key.
+    """
+    configured = os.getenv("SOLANA_RPC_URL", "").strip()
+    return configured or CHAIN["public_rpc"]
 
 HOLDER_CLAIM = (
     "Holder concentration uses at most the largest 20 token accounts, "
@@ -22,22 +35,158 @@ HOLDER_CLAIM = (
     "is positively identified as a known pool or curve program. "
     "Unknown or missing owner metadata fails closed. "
     "If the sampled balances do not account for total supply, the token is not approved. "
-    "This is not a complete holder census and not a developer-wallet audit."
+    "If the RPC cannot return largest accounts, concentration is unavailable and the token is not approved. "
+    "This is not a complete holder census and not a developer-wallet audit. "
+    "Even a working provider only returns the largest accounts, so coverage of a widely held mint stays incomplete."
 )
 
 
 def rpc(method: str, params: list, session: requests.Session | None = None):
-    s = session or requests.Session()
-    response = s.post(
-        RPC,
+    client = session or requests.Session()
+    response = client.post(
+        rpc_url(),
         json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
         timeout=20,
     )
+    if response.status_code == 429:
+        error = requests.HTTPError(f"HTTP 429 for {method}", response=response)
+        raise error
     response.raise_for_status()
     body = response.json()
     if "error" in body:
-        raise RuntimeError(f"{method}: {body['error']}")
+        message = body["error"].get("message", "rpc error") if isinstance(body["error"], dict) else str(body["error"])
+        raise RuntimeError(f"{method}: {message}")
     return body["result"]
+
+
+def _http_diagnostic(method: str, response, now: datetime) -> dict:
+    headers = {} if response is None else {k.lower(): v for k, v in response.headers.items()}
+    retry_raw = headers.get("retry-after")
+    try:
+        retry_seconds = max(1, int(float(retry_raw)))
+    except (TypeError, ValueError):
+        retry_seconds = 60
+    status = None if response is None else response.status_code
+    return {
+        "method": method,
+        "supported": False,
+        "http_status": status,
+        "retry_after": retry_raw,
+        "retry_seconds": retry_seconds,
+        "method_limit": headers.get("x-ratelimit-method-limit"),
+        "checked_at": now.astimezone(timezone.utc).isoformat(),
+        "unavailable_until": (now.astimezone(timezone.utc) + timedelta(seconds=retry_seconds)).isoformat(),
+        "detail": f"{method} is unavailable (HTTP {status}). Concentration is not a pass.",
+    }
+
+
+class HolderReadiness:
+    """Remembers that getTokenLargestAccounts is blocked, and caches fresh reads.
+
+    The backoff is the provider's Retry-After, not a second endpoint. A cached
+    read past its TTL is ignored. Nothing here treats a miss as safe.
+    """
+
+    def __init__(self, path: str | os.PathLike = READINESS_PATH):
+        self.path = Path(path)
+        self.state = self._load()
+
+    def _load(self) -> dict:
+        if not self.path.exists():
+            return {"block": None, "facts": {}}
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"block": None, "facts": {}}
+        if not isinstance(data, dict):
+            return {"block": None, "facts": {}}
+        data.setdefault("block", None)
+        data.setdefault("facts", {})
+        return data
+
+    def _save(self) -> None:
+        atomic_write(self.path, json.dumps(self.state, indent=1))
+
+    def blocked(self, now: datetime | None = None) -> dict | None:
+        block = self.state.get("block")
+        if not block:
+            return None
+        now = now or datetime.now(timezone.utc)
+        until = datetime.fromisoformat(block["unavailable_until"])
+        if now.astimezone(timezone.utc) >= until.astimezone(timezone.utc):
+            return None
+        return block
+
+    def note_block(self, method: str, response, now: datetime | None = None) -> dict:
+        now = now or datetime.now(timezone.utc)
+        block = _http_diagnostic(method, response, now)
+        self.state["block"] = block
+        self._save()
+        return block
+
+    def cached_facts(self, mint: str, now: datetime | None = None) -> dict | None:
+        row = (self.state.get("facts") or {}).get(mint)
+        if not row:
+            return None
+        now = now or datetime.now(timezone.utc)
+        fetched = datetime.fromisoformat(row["fetched_at"])
+        age = (now.astimezone(timezone.utc) - fetched.astimezone(timezone.utc)).total_seconds()
+        if age > float(CHAIN["facts_ttl_seconds"]) or age < 0:
+            return None
+        return row["facts"]
+
+    def store_facts(self, mint: str, facts_row: dict, now: datetime | None = None) -> None:
+        now = now or datetime.now(timezone.utc)
+        self.state.setdefault("facts", {})[mint] = {
+            "fetched_at": now.astimezone(timezone.utc).isoformat(),
+            "facts": facts_row,
+        }
+        self._save()
+
+
+def probe_largest_accounts(session: requests.Session | None = None, mint: str | None = None,
+                            readiness: HolderReadiness | None = None,
+                            now: datetime | None = None) -> dict:
+    """One getTokenLargestAccounts call. Does not retry and does not switch endpoints.
+
+    The mint defaults to wrapped SOL, a public account, only to see if the method
+    is allowed. The result is a diagnostic, not a trading signal.
+    """
+    now = now or datetime.now(timezone.utc)
+    target = mint or "So11111111111111111111111111111111111111112"
+    if readiness and readiness.blocked(now):
+        return readiness.blocked(now)
+    client = session or requests.Session()
+    response = client.post(
+        rpc_url(),
+        json={"jsonrpc": "2.0", "id": 1, "method": "getTokenLargestAccounts", "params": [target]},
+        timeout=20,
+    )
+    if response.status_code == 429:
+        diagnostic = _http_diagnostic("getTokenLargestAccounts", response, now)
+        if readiness:
+            readiness.note_block("getTokenLargestAccounts", response, now)
+        return diagnostic
+    if response.status_code != 200:
+        diagnostic = _http_diagnostic("getTokenLargestAccounts", response, now)
+        if readiness:
+            readiness.note_block("getTokenLargestAccounts", response, now)
+        return diagnostic
+    body = response.json()
+    if "error" in body:
+        diagnostic = _http_diagnostic("getTokenLargestAccounts", response, now)
+        diagnostic["detail"] = "getTokenLargestAccounts returned an RPC error. Concentration is not a pass."
+        if readiness:
+            readiness.state["block"] = diagnostic
+            readiness._save()
+        return diagnostic
+    return {
+        "method": "getTokenLargestAccounts",
+        "supported": True,
+        "http_status": 200,
+        "checked_at": now.astimezone(timezone.utc).isoformat(),
+        "detail": "method responded. A response is not a holder audit.",
+    }
 
 
 def _unavailable(reason: str, detail: str = "", **fields) -> dict:
@@ -66,13 +215,32 @@ def _unavailable(reason: str, detail: str = "", **fields) -> dict:
     return out
 
 
-def facts(mint: str, session: requests.Session | None = None) -> dict:
+def _note_and_unavailable(readiness, method: str, response, now: datetime) -> dict:
+    diagnostic = _http_diagnostic(method, response, now)
+    if readiness is not None:
+        readiness.note_block(method, response, now)
+    return _unavailable("holder_method_unavailable", diagnostic["detail"], diagnostic=diagnostic)
+
+
+def facts(mint: str, session: requests.Session | None = None,
+          readiness: HolderReadiness | None = None, now: datetime | None = None) -> dict:
     """Mint/freeze authority plus a sampled concentration figure.
 
     `developer_wallet_audited` is always false. Passing the numeric caps does
     not mean the holder set is safe.
     """
-    info = rpc("getAccountInfo", [mint, {"encoding": "jsonParsed"}], session)
+    now = now or datetime.now(timezone.utc)
+    if readiness is not None:
+        block = readiness.blocked(now)
+        if block:
+            return _unavailable("holder_method_unavailable", block["detail"], diagnostic=block)
+        cached = readiness.cached_facts(mint, now)
+        if cached is not None:
+            return cached
+    try:
+        info = rpc("getAccountInfo", [mint, {"encoding": "jsonParsed"}], session)
+    except requests.HTTPError as exc:
+        return _note_and_unavailable(readiness, "getAccountInfo", getattr(exc, "response", None), now)
     try:
         parsed = info["value"]["data"]["parsed"]["info"]
         decimals = int(parsed["decimals"])
@@ -90,6 +258,9 @@ def facts(mint: str, session: requests.Session | None = None) -> dict:
 
     try:
         raw = rpc("getTokenLargestAccounts", [mint], session)["value"]
+    except requests.HTTPError as exc:
+        return _note_and_unavailable(
+            readiness, "getTokenLargestAccounts", getattr(exc, "response", None), now)
     except (KeyError, TypeError, ValueError) as exc:
         return _unavailable("unavailable_concentration", f"largest accounts unreadable: {exc}",
                             **authorities)
@@ -176,7 +347,7 @@ def facts(mint: str, session: requests.Session | None = None) -> dict:
     ranked = sorted(wallets.values(), reverse=True)
     available = unknown == 0 and all(amount is not None for amount in amounts)
     share = (lambda xs: (sum(xs) / supply) if supply else None) if available else (lambda xs: None)
-    return {
+    built = {
         **authorities,
         "top_wallet_pct": share(ranked[:1]),
         "top_10_pct": share(ranked[:10]),
@@ -196,6 +367,9 @@ def facts(mint: str, session: requests.Session | None = None) -> dict:
         "aggregated_owners": len(wallets),
         "limitations": HOLDER_CLAIM,
     }
+    if readiness is not None:
+        readiness.store_facts(mint, built, now)
+    return built
 
 
 def chain_kill(facts_row: dict) -> str | None:

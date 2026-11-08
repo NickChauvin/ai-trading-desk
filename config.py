@@ -26,6 +26,9 @@ SCAN = {
     "max_mcap_usd": 5_000_000,
     "min_trades_h1": 120,
     "min_sells_ratio_h1": 0.15,    # sells / buys. Below this nobody can sell = honeypot smell
+    "watch_limit": 200,            # retained discoveries, not a census of launches
+    "revisit_per_cycle": 3,        # refreshes of tokens that aged off the two-page feed
+    "revisit_pause_seconds": 1.0,  # pacing between those refreshes; 429 stops the batch
 }
 
 # Owner programs treated as liquidity venues. An account is excluded from holder
@@ -50,6 +53,12 @@ CHAIN = {
     "allow_freeze_authority": False,
     "largest_accounts_checked": 20,  # sample size, not a holder census
     "known_pool_programs": KNOWN_POOL_PROGRAMS,
+    "facts_ttl_seconds": 120,      # cached chain reads expire; stale cache is not a pass
+    # Default public endpoint. It is not assumed to allow getTokenLargestAccounts.
+    # A usable endpoint is one you provision that allows getAccountInfo,
+    # getTokenLargestAccounts, and getMultipleAccounts. Set SOLANA_RPC_URL.
+    # Do not put an API key in this file.
+    "public_rpc": "https://api.mainnet-beta.solana.com",
 }
 
 # ---------- Seat 3: analyst (paid calls OFF until you fill this in) ----------

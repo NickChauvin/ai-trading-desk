@@ -6,6 +6,9 @@ test:            ## run the offline test suite
 demo:            ## invented fixtures, no API keys, no network
 	python demos/offline_demo.py
 
+shadow-bounded:  ## one shadow cycle, hard ceilings, no paper ledger
+	python scripts/bounded_shadow_trial.py
+
 shadow:          ## one full cycle, journal + alerts, no position
 	python run_crypto.py --shadow --once
 
