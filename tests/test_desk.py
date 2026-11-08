@@ -79,7 +79,7 @@ class ChainFacts(unittest.TestCase):
             return {"value": [{"data": {"parsed": {"info": {"owner": own[a]}}}} for a in params[0]]}
         if method == "getMultipleAccounts":
             prog = {"curvePDA": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
-                    "wallet1": chain.SYSTEM_PROGRAM, "wallet2": None}
+                    "wallet1": chain.SYSTEM_PROGRAM, "wallet2": chain.SYSTEM_PROGRAM}
             return {"value": [None if prog[o] is None else {"owner": prog[o]} for o in params[0]]}
         raise AssertionError(method)
 
@@ -93,6 +93,10 @@ class ChainFacts(unittest.TestCase):
         self.assertAlmostEqual(f["top_wallet_pct"], 0.03)
         self.assertAlmostEqual(f["top_10_pct"], 0.05)
         self.assertAlmostEqual(f["program_held_pct"], 0.70)
+        self.assertFalse(f["developer_wallet_audited"])
+        self.assertFalse(f["coverage_complete"])
+        self.assertIn("not a developer-wallet audit", f["limitations"])
+        self.assertTrue(f["excluded_as_pool"])
         self.assertIsNone(chain.chain_kill(f))
 
     def test_authority_is_a_fact(self):
@@ -105,7 +109,7 @@ class ChainFacts(unittest.TestCase):
 
 
 class RiskEngine(unittest.TestCase):
-    acct = Account(equity=1_000, day_pnl=0, open_positions=0)
+    acct = Account(equity=1_000, day_pnl=0, open_positions=0, cash=1_000, day_start=1_000)
 
     def test_sizing_takes_the_smallest_cap(self):
         ok, ticket, _ = check_token_trade(thesis(), self.acct, 30_000, now=NOON)
@@ -123,7 +127,7 @@ class RiskEngine(unittest.TestCase):
         self.assertFalse(check_token_trade(thesis(score=6), self.acct, 30_000, now=NOON)[0])
 
     def test_daily_loss_and_quiet_hours(self):
-        down = Account(equity=1_000, day_pnl=-31, open_positions=0)
+        down = Account(equity=1_000, day_pnl=-31, open_positions=0, cash=1_000, day_start=1_000)
         self.assertIn("daily loss", check_token_trade(thesis(), down, 30_000, now=NOON)[2])
         night = datetime(2026, 10, 26, 2, 30)
         self.assertIn("quiet", check_token_trade(thesis(), self.acct, 30_000, now=night)[2])
@@ -133,7 +137,8 @@ class RiskEngine(unittest.TestCase):
         th = analyst.StockThesis.model_construct(symbol="nvda", action="BUY", confidence="High",
                                                  entry_reason="x", stop_loss=170,
                                                  invalidation="x", sources=[])
-        ok, qty, _ = check_stock_trade(th, Account(100_000, 0, 0), 180)
+        ok, qty, _ = check_stock_trade(
+            th, Account(100_000, 0, 0, cash=100_000, day_start=100_000), 180, now=NOON)
         self.assertEqual((ok, qty), (True, 27))    # min(100 by risk, 27 by size)
 
 
@@ -150,17 +155,40 @@ class Untrusted(unittest.TestCase):
         self.assertNotIn("IGNORE RULES", before_wrap)
 
     def test_analyst_with_fake_client(self):
-        fake = SimpleNamespace(messages=SimpleNamespace(parse=lambda **kw: SimpleNamespace(
-            parsed_output=thesis(score=14))))
-        th = analyst.analyze_token(token(), {}, {}, client=fake)
+        from desk.budget import ModelBudget
+        cfg = {
+            "enabled": True,
+            "model": "fixture-model-not-a-quote",
+            "review_model": "",
+            "max_output_tokens": 128,
+            "max_input_tokens": 1000,
+            "max_billable_retries": 0,
+            "daily_budget_usd": 1,
+            "price_input_usd_per_million": 1,
+            "price_output_usd_per_million": 1,
+            "timezone": "UTC",
+        }
+        seen = {}
+
+        def parse(**kw):
+            seen.update(kw)
+            return SimpleNamespace(parsed_output=thesis(score=14))
+
+        fake = SimpleNamespace(messages=SimpleNamespace(parse=parse))
+        with tempfile.TemporaryDirectory() as directory:
+            budget = ModelBudget(Path(directory) / "budget.json", cfg)
+            th = analyst.analyze_token(token(), {}, {}, client=fake, budget=budget)
         self.assertEqual(th.score, 10)            # clamped in code
+        self.assertEqual(seen["max_tokens"], 128)
+        self.assertEqual(seen["model"], "fixture-model-not-a-quote")
 
 
 class PaperExits(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         self.b = PaperBroker(Path(self.dir) / "ledger.json")
-        self.b.buy("M", "TEST", 20, 1.0)          # fills at 1.02 after slippage
+        fill = self.b.buy("M", "TEST", 20, 1.0, 100_000)  # fills at 1.02 after slippage
+        self.assertTrue(fill["filled"])
 
     def q(self, price, h6=1000, h24=4000):
         return {"price_usd": price, "liquidity_usd": 1e5, "volume_h6": h6, "volume_h24": h24}
@@ -178,7 +206,8 @@ class PaperExits(unittest.TestCase):
         self.assertIn("volume decay", self.b.exit_signal("M", self.q(1.0, h6=100), now=later)[1])
 
     def test_round_trip_pnl(self):
-        out = self.b.sell("M", 1.0, 1.0, "test")
+        out = self.b.attempt_exit("M", self.q(1.0), force=True, reason="test")
+        self.assertEqual(out["status"], "filled")
         self.assertLess(out["pnl_usd"], 0)        # fees + slippage cost money at flat price
         self.assertEqual(self.b.open_count(), 0)
         self.assertAlmostEqual(self.b.equity(), 1_000 + out["pnl_usd"], places=2)

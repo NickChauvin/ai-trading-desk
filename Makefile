@@ -1,7 +1,10 @@
-.PHONY: test shadow paper stocks review review-claude kill
+.PHONY: test shadow paper stocks review review-claude kill demo
 
 test:            ## run the offline test suite
 	python -m unittest discover -s tests -v
+
+demo:            ## invented fixtures, no API keys, no network
+	python demos/offline_demo.py
 
 shadow:          ## one full cycle, journal + alerts, no position
 	python run_crypto.py --shadow --once

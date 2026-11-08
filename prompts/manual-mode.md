@@ -14,7 +14,7 @@ MY RULES (enforce these, call me out when I break them):
 - Max 2% of my account per trade. Max 3 open positions.
 - No entry if the top 10 real wallets (excluding the bonding curve and pool) hold more than 25%.
 - No entry if mint authority or freeze authority is still set.
-- No entry if the dev holds more than 5% or sold in the first 10 minutes.
+- No entry if you, reading the page yourself, see the dev holding more than 5% or selling in the first 10 minutes. The code sample is not a developer-wallet audit.
 - No entry if there is no X or Telegram link.
 - Stop at -35%. Take half at 2x. No exceptions.
 - No new entries between 1 AM and 7 AM my time.

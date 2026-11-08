@@ -11,7 +11,8 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from config import REVIEW_MODEL
+from desk.analyst import _call
+from desk.budget import ModelBudget, PaidCallsDisabled
 from desk.ops import load_env
 
 REVIEW_PROMPT = """You review a trading desk's week from its journal stats.
@@ -50,20 +51,33 @@ def stats(rows: list[dict]) -> dict:
     }
 
 
+def claude_review(rows: dict, budget: ModelBudget | None = None, client=None) -> str:
+    """Paid written review. Disabled until model, prices, and a budget are set.
+
+    The same worst-case reservation covers this call. Prices are whatever you
+    configured; they are not looked up and not assumed to match a cheaper model.
+    """
+    budget = budget or ModelBudget.from_config()
+    response = _call(
+        budget, client, purpose="weekly_review", system=REVIEW_PROMPT,
+        content=json.dumps(rows, default=str), output_format=None,
+    )
+    return "".join(block.text for block in response.content if getattr(block, "type", "") == "text")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--claude", action="store_true")
     ap.add_argument("--days", type=int, default=7)
     args = ap.parse_args()
-    s = stats(load(args.days))
-    print(json.dumps(s, indent=1, default=str))
+    summary = stats(load(args.days))
+    print(json.dumps(summary, indent=1, default=str))
     if args.claude:
         load_env()
-        from anthropic import Anthropic
-        msg = Anthropic().messages.create(
-            model=REVIEW_MODEL, max_tokens=4000, system=REVIEW_PROMPT,
-            messages=[{"role": "user", "content": json.dumps(s, default=str)}])
-        print("\n" + "".join(b.text for b in msg.content if b.type == "text"))
+        try:
+            print("\n" + claude_review(summary))
+        except PaidCallsDisabled as exc:
+            print(f"\npaid review disabled: {exc}")
 
 
 if __name__ == "__main__":

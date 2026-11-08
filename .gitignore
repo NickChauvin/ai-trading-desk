@@ -3,5 +3,8 @@
 __pycache__/
 journal.jsonl
 paper_ledger.json
+model_budget.json
+model_budget.json.tmp
+model_budget.json.lock
 desk.db
 KILL

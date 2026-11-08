@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Paper exits fail closed when a quote is missing or unexecutable. No proceeds are invented from the last price. Unresolved holdings keep their cash and realized P&L, and show a separate zero-recovery loss risk. `KILL` reports holdings that are still open.
+- Holder checks sample at most 20 token accounts, aggregate owner balances inside that sample, and exclude only known pool/curve programs. Unknown or missing metadata fails closed. This is not a developer-wallet audit.
+- Daily loss baseline uses an explicit timezone (UTC by default), persists across restart, and rolls during a long run only after quotes are refreshed.
+- Cash and aggregate open-risk limits are enforced. The daily-loss gate is not a guaranteed maximum loss.
+- Model calls reserve a worst-case daily dollar budget before the request. Failures and retries that may bill are not refunded. Paid calls are off until model, prices, and budget are set. Quiet hours and free risk checks run first.
+- The scanner's two GeckoTerminal pages are described as a sample, not every launch.
+- Shadow mode does not open or mutate the paper ledger. Telegram alerts are off by default. Stocks refuse non-paper clients.
+
 ## v1.0.0 · 2026-10-26
 
 - Five seats: scanner, chain check, Claude analyst, risk engine, paper execution

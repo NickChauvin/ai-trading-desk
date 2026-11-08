@@ -1,7 +1,9 @@
 """Seat 2: chain facts. Straight from a Solana RPC node, no model involved.
 
-Facts kill before judgements do: an open mint authority is not an opinion,
-so it never reaches the analyst.
+The sample is the largest token accounts the RPC returns, capped in config
+(default 20). It is not a holder census and it is not a developer-wallet audit.
+Only accounts whose owner is positively owned by a known pool or curve program
+are removed. Missing or unknown owner metadata fails closed.
 """
 from __future__ import annotations
 
@@ -14,77 +16,203 @@ from config import CHAIN
 RPC = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
 SYSTEM_PROGRAM = "11111111111111111111111111111111"
 
+HOLDER_CLAIM = (
+    "Holder concentration uses at most the largest 20 token accounts, "
+    "aggregates balances only inside that sample, and excludes an account only when its owner "
+    "is positively identified as a known pool or curve program. "
+    "Unknown or missing owner metadata fails closed. "
+    "This is not a complete holder census and not a developer-wallet audit."
+)
+
 
 def rpc(method: str, params: list, session: requests.Session | None = None):
     s = session or requests.Session()
-    r = s.post(RPC, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
-               timeout=20)
-    r.raise_for_status()
-    body = r.json()
+    response = s.post(
+        RPC,
+        json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+        timeout=20,
+    )
+    response.raise_for_status()
+    body = response.json()
     if "error" in body:
         raise RuntimeError(f"{method}: {body['error']}")
     return body["result"]
 
 
-def facts(mint: str, session: requests.Session | None = None) -> dict:
-    """Mint/freeze authority, supply, and holder concentration of REAL wallets.
+def _unavailable(reason: str, detail: str = "", **fields) -> dict:
+    out = {
+        "mint_authority": None,
+        "freeze_authority": None,
+        "supply": None,
+        "top_wallet_pct": None,
+        "top_10_pct": None,
+        "program_held_pct": None,
+        "wallets_counted": 0,
+        "sampled_accounts": 0,
+        "sampled_balance": 0.0,
+        "coverage_pct": None,
+        "coverage_complete": False,
+        "developer_wallet_audited": False,
+        "concentration_available": False,
+        "concentration_failure": reason,
+        "detail": detail,
+        "unknown_accounts": 0,
+        "excluded_as_pool": [],
+        "aggregated_owners": 0,
+        "limitations": HOLDER_CLAIM,
+    }
+    out.update(fields)
+    return out
 
-    The bonding curve and the AMM pool hold huge balances by design. Their token
-    accounts belong to program-owned addresses, not to wallets, so we look up who
-    owns each top account and drop anything not owned by the System Program.
+
+def facts(mint: str, session: requests.Session | None = None) -> dict:
+    """Mint/freeze authority plus a sampled concentration figure.
+
+    `developer_wallet_audited` is always false. Passing the numeric caps does
+    not mean the holder set is safe.
     """
     info = rpc("getAccountInfo", [mint, {"encoding": "jsonParsed"}], session)
-    parsed = info["value"]["data"]["parsed"]["info"]
-    decimals = int(parsed["decimals"])
-    supply = int(parsed["supply"]) / 10 ** decimals
+    try:
+        parsed = info["value"]["data"]["parsed"]["info"]
+        decimals = int(parsed["decimals"])
+        supply = int(parsed["supply"]) / 10 ** decimals
+    except (KeyError, TypeError, ValueError) as exc:
+        return _unavailable("unavailable_concentration", f"mint account unreadable: {exc}")
 
-    largest = rpc("getTokenLargestAccounts", [mint], session)["value"]
-    largest = largest[: CHAIN["largest_accounts_checked"]]
-    token_accts = [x["address"] for x in largest]
-
-    # token account -> its owner address
-    accts = rpc("getMultipleAccounts", [token_accts, {"encoding": "jsonParsed"}],
-                session)["value"]
-    owners = [((a or {}).get("data", {}).get("parsed", {}).get("info", {}) or {}).get("owner")
-              for a in accts]
-
-    # owner address -> which program owns it (System Program = a normal wallet)
-    uniq = [o for o in dict.fromkeys(owners) if o]
-    owner_accts = rpc("getMultipleAccounts", [uniq, {"encoding": "base64"}],
-                      session)["value"] if uniq else []
-    program_of = {o: (acc or {}).get("owner") for o, acc in zip(uniq, owner_accts)}
-
-    wallets: dict[str, float] = {}
-    excluded = 0.0
-    for row, owner in zip(largest, owners):
-        amount = float(row.get("uiAmount") or 0)
-        prog = program_of.get(owner)
-        if owner and prog not in (None, SYSTEM_PROGRAM):
-            excluded += amount            # curve, pool, vault: not a seller in the usual sense
-            continue
-        wallets[owner or row["address"]] = wallets.get(owner or row["address"], 0) + amount
-
-    ranked = sorted(wallets.values(), reverse=True)
-    share = lambda xs: (sum(xs) / supply) if supply else None
-    return {
+    authorities = {
         "mint_authority": parsed.get("mintAuthority"),
         "freeze_authority": parsed.get("freezeAuthority"),
         "supply": supply,
+    }
+    if supply <= 0:
+        return _unavailable("unavailable_concentration", "supply missing or zero", **authorities)
+
+    try:
+        raw = rpc("getTokenLargestAccounts", [mint], session)["value"]
+    except (KeyError, TypeError, ValueError) as exc:
+        return _unavailable("unavailable_concentration", f"largest accounts unreadable: {exc}",
+                            **authorities)
+    if not raw:
+        return _unavailable("unavailable_concentration", "no token accounts returned", **authorities)
+
+    limit = int(CHAIN["largest_accounts_checked"])
+    largest = list(raw)[:limit]
+    token_accts = [row.get("address") for row in largest]
+    if any(not addr for addr in token_accts):
+        return _unavailable("unknown_holder", "token account address missing", **authorities,
+                            sampled_accounts=len(largest))
+
+    accts = rpc("getMultipleAccounts", [token_accts, {"encoding": "jsonParsed"}], session)["value"]
+    if not accts or len(accts) != len(largest):
+        return _unavailable("unknown_holder", "token account metadata missing", **authorities,
+                            sampled_accounts=len(largest))
+
+    owners = []
+    unknown = 0
+    amounts = []
+    for row, acct in zip(largest, accts):
+        if row.get("uiAmount") is None:
+            unknown += 1
+            amounts.append(None)
+        else:
+            try:
+                amounts.append(float(row["uiAmount"]))
+            except (TypeError, ValueError):
+                unknown += 1
+                amounts.append(None)
+        if not acct:
+            owners.append(None)
+            unknown += 1
+            continue
+        try:
+            owner = acct["data"]["parsed"]["info"].get("owner")
+        except (KeyError, TypeError, AttributeError):
+            owner = None
+        if not owner:
+            unknown += 1
+        owners.append(owner)
+
+    uniq = [owner for owner in dict.fromkeys(owners) if owner]
+    owner_accts = (
+        rpc("getMultipleAccounts", [uniq, {"encoding": "base64"}], session)["value"]
+        if uniq else []
+    )
+    if uniq and (owner_accts is None or len(owner_accts) != len(uniq)):
+        return _unavailable("unknown_holder", "owner metadata missing", **authorities,
+                            unknown_accounts=max(unknown, 1), sampled_accounts=len(largest))
+
+    program_of = {}
+    for owner, acct in zip(uniq, owner_accts or []):
+        if not acct or not acct.get("owner"):
+            program_of[owner] = None
+            unknown += 1
+        else:
+            program_of[owner] = acct.get("owner")
+
+    known = set(CHAIN["known_pool_programs"])
+    wallets: dict[str, float] = {}
+    excluded = 0.0
+    excluded_rows = []
+    for amount, owner in zip(amounts, owners):
+        if amount is None or not owner or not program_of.get(owner):
+            unknown += 1
+            continue
+        program = program_of[owner]
+        if program in known:
+            excluded += amount
+            excluded_rows.append({"owner": owner, "program": program, "amount": amount})
+            continue
+        if program != SYSTEM_PROGRAM:
+            unknown += 1
+            continue
+        wallets[owner] = wallets.get(owner, 0.0) + amount
+
+    sampled_balance = 0.0
+    for amount in amounts:
+        if amount is not None:
+            sampled_balance += amount
+    coverage = sampled_balance / supply
+    ranked = sorted(wallets.values(), reverse=True)
+    available = unknown == 0 and all(amount is not None for amount in amounts)
+    share = (lambda xs: (sum(xs) / supply) if supply else None) if available else (lambda xs: None)
+    return {
+        **authorities,
         "top_wallet_pct": share(ranked[:1]),
         "top_10_pct": share(ranked[:10]),
-        "program_held_pct": share([excluded]),
-        "wallets_counted": len(ranked),
+        "program_held_pct": (excluded / supply) if available else None,
+        "wallets_counted": len(ranked) if available else 0,
+        "sampled_accounts": len(largest),
+        "sampled_balance": sampled_balance,
+        "sample_limit": limit,
+        "sample_capped": len(raw) >= limit,
+        "coverage_pct": coverage,
+        "coverage_complete": available and abs(sampled_balance - supply) <= max(1e-6, supply * 1e-9),
+        "developer_wallet_audited": False,
+        "concentration_available": available,
+        "concentration_failure": None if available else "unknown_holder",
+        "unknown_accounts": unknown,
+        "excluded_as_pool": excluded_rows,
+        "aggregated_owners": len(wallets),
+        "limitations": HOLDER_CLAIM,
     }
 
 
-def chain_kill(f: dict) -> str | None:
-    """Plain facts against plain limits. First failure wins."""
-    if f["mint_authority"] and not CHAIN["allow_mint_authority"]:
+def chain_kill(facts_row: dict) -> str | None:
+    """Plain facts against plain limits. First failure wins.
+
+    A missing concentration figure does not pass. Numeric caps are applied only
+    to a sample that classified every returned account.
+    """
+    if facts_row.get("mint_authority") and not CHAIN["allow_mint_authority"]:
         return "mint_authority"
-    if f["freeze_authority"] and not CHAIN["allow_freeze_authority"]:
+    if facts_row.get("freeze_authority") and not CHAIN["allow_freeze_authority"]:
         return "freeze_authority"
-    if f["top_wallet_pct"] is not None and f["top_wallet_pct"] > CHAIN["max_top_wallet"]:
+    if facts_row.get("concentration_available") is False:
+        return facts_row.get("concentration_failure") or "unavailable_concentration"
+    if facts_row.get("top_wallet_pct") is None or facts_row.get("top_10_pct") is None:
+        return "unavailable_concentration"
+    if facts_row["top_wallet_pct"] > CHAIN["max_top_wallet"]:
         return "top_wallet"
-    if f["top_10_pct"] is not None and f["top_10_pct"] > CHAIN["max_top_10"]:
+    if facts_row["top_10_pct"] > CHAIN["max_top_10"]:
         return "top_10"
     return None
